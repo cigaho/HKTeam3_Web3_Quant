@@ -46,7 +46,7 @@ class RoostooAPIClient:
             
         if signed:
             # 添加时间戳
-            params['timestamp'] = self._gettimestamp()
+            params['timestamp'] = self._get_timestamp()
             # 生成签名
             signature = self._generate_signature(params)
             

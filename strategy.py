@@ -1,3 +1,35 @@
+import time
+
+class QuickTestStrategy:
+    def __init__(self):
+        self.name = "快速测试策略"
+        self.trade_count = 0
+        self.last_trade_time = 0
+        
+    def generate_signal(self, market_data):
+        """
+        快速测试策略：每分钟交替买卖
+        """
+        current_time = time.time()
+        
+        # 每分钟执行一次交易（避免频率限制）
+        if current_time - self.last_trade_time < 60:  # 60秒间隔
+            return 'HOLD'
+        
+        self.trade_count += 1
+        self.last_trade_time = current_time
+        
+        print(f"🎯 测试交易 #{self.trade_count}")
+        
+        # 交替执行买卖：奇数次数买，偶数次数卖
+        if self.trade_count % 2 == 1:
+            print("➡️ 生成买入信号")
+            return 'BUY'
+        else:
+            print("⬅️ 生成卖出信号")
+            return 'SELL'
+
+# 保留原来的SimpleStrategy类作为备用
 class SimpleStrategy:
     def __init__(self):
         self.name = "简单移动平均策略"
@@ -18,7 +50,7 @@ class SimpleStrategy:
         
         print(f"价格: ${current_price}, 24小时变化: {price_change*100:.2f}%")
         
-        # 简单的策略逻辑（你需要在这里实现你的真实策略）
+        # 简单的策略逻辑
         if price_change < -0.02:  # 如果24小时下跌超过2%
             return 'BUY'
         elif price_change > 0.03:  # 如果24小时上涨超过3%
