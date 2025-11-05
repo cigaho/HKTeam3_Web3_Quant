@@ -161,7 +161,7 @@ class Backtester:
         })
     
     def _calculate_performance_metrics(self):
-        """计算绩效指标"""
+        """计算详细的绩效指标"""
         if len(self.equity_curve) == 0:
             return {}
         
@@ -188,6 +188,12 @@ class Backtester:
         excess_returns = equity_df['returns'].dropna()
         sharpe_ratio = excess_returns.mean() / excess_returns.std() * np.sqrt(252) if excess_returns.std() > 0 else 0
         
+        # === 新增指标1: Sortino Ratio ===
+        sortino_ratio = self._calculate_sortino_ratio(equity_df)
+        
+        # === 新增指标2: Calmar Ratio ===
+        calmar_ratio = self._calculate_calmar_ratio(annual_return, max_drawdown)
+        
         # 交易统计
         total_trades = len(self.trades)
         winning_trades = self._calculate_winning_trades()
@@ -200,12 +206,62 @@ class Backtester:
             'annual_return': annual_return,
             'max_drawdown': max_drawdown,
             'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,  # 新增
+            'calmar_ratio': calmar_ratio,    # 新增
             'total_trades': total_trades,
             'win_rate': win_rate,
             'trades': self.trades,
             'equity_curve': equity_df,
             'signals': self.signals
         }
+    
+    def _calculate_sortino_ratio(self, equity_df):
+        """
+        计算索提诺比率 (Sortino Ratio)
+        公式: Sortino Ratio = Rp̄ / σd
+        Rp̄ = 平均投资组合收益率
+        σd = 下行风险（负收益的标准差）
+        """
+        returns = equity_df['returns'].dropna()
+        
+        if len(returns) == 0:
+            return 0
+        
+        # 计算平均收益率
+        mean_return = returns.mean()
+        
+        # 计算下行风险（只考虑负收益）
+        downside_returns = returns[returns < 0]
+        
+        if len(downside_returns) == 0:
+            # 如果没有下行风险，Sortino比率设为无穷大
+            return float('inf')
+        
+        downside_risk = downside_returns.std()
+        
+        if downside_risk == 0:
+            return float('inf')
+        
+        # 年化处理
+        sortino_ratio = mean_return / downside_risk * np.sqrt(252)
+        return sortino_ratio
+    
+    def _calculate_calmar_ratio(self, annual_return, max_drawdown):
+        """
+        计算卡尔玛比率 (Calmar Ratio)
+        公式: Calmar Ratio = 年化收益率 / |最大回撤|
+        """
+        if max_drawdown == 0:
+            return float('inf')
+        
+        # 取最大回撤的绝对值
+        max_drawdown_abs = abs(max_drawdown)
+        
+        if max_drawdown_abs == 0:
+            return float('inf')
+        
+        calmar_ratio = annual_return / max_drawdown_abs
+        return calmar_ratio
     
     def _calculate_winning_trades(self):
         """计算盈利交易数量"""
@@ -235,6 +291,8 @@ class Backtester:
         print(f"年化收益率: {results['annual_return']:+.2%}")
         print(f"最大回撤: {results['max_drawdown']:+.2%}")
         print(f"夏普比率: {results['sharpe_ratio']:.2f}")
+        print(f"索提诺比率: {results['sortino_ratio']:.2f}")  # 新增
+        print(f"卡尔玛比率: {results['calmar_ratio']:.2f}")    # 新增
         print(f"总交易次数: {results['total_trades']}")
         print(f"胜率: {results['win_rate']:.1%}")
         

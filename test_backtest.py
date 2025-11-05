@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-量化策略回测测试
+量化策略回测测试脚本
 """
 
 import os
@@ -35,7 +35,7 @@ try:
         asset='BTC',
         interval='1d',
         start=int(datetime(2024, 8, 1).timestamp()),
-        end=int(datetime(2024, 11, 1).timestamp())
+        end=int(datetime(2025, 11, 1).timestamp())
     )
     
     # 添加技术指标
@@ -63,6 +63,8 @@ try:
             print(f"   📊 总收益: {result['total_return']:+.2%}")
             print(f"   📉 最大回撤: {result['max_drawdown']:+.2%}")
             print(f"   ⭐ 夏普比率: {result['sharpe_ratio']:.2f}")
+            print(f"   📈 索提诺比率: {result['sortino_ratio']:.2f}")
+            print(f"   📊 卡尔玛比率: {result['calmar_ratio']:.2f}")
             print(f"   🔢 交易次数: {result['total_trades']}")
             print(f"   🎯 胜率: {result['win_rate']:.1%}")
             
@@ -76,12 +78,14 @@ try:
         print("="*40)
         for name, result in results.items():
             print(f"{name}:")
-            print(f"   收益: {result['total_return']:+.2%} | 夏普: {result['sharpe_ratio']:.2f} | 回撤: {result['max_drawdown']:+.2%}")
+            print(f"   收益: {result['total_return']:+.2%} | 夏普: {result['sharpe_ratio']:.2f}")
+            print(f"   索提诺: {result['sortino_ratio']:.2f} | 卡尔玛: {result['calmar_ratio']:.2f}")
+            print(f"   回撤: {result['max_drawdown']:+.2%} | 胜率: {result['win_rate']:.1%}")
         
-        # 找出最佳策略
-        best_strategy = max(results.items(), key=lambda x: x[1]['sharpe_ratio'])
-        print(f"\n🏅 最佳策略: {best_strategy[0]}")
-        print(f"📈 夏普比率: {best_strategy[1]['sharpe_ratio']:.2f}")
+        # 找出最佳策略（基于索提诺比率）
+        best_strategy = max(results.items(), key=lambda x: x[1]['sortino_ratio'])
+        print(f"\n🏅 最佳策略（基于索提诺比率）: {best_strategy[0]}")
+        print(f"📈 索提诺比率: {best_strategy[1]['sortino_ratio']:.2f}")
     
     print("\n🎉 回测完成!")
     
