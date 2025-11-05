@@ -7,6 +7,7 @@ import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
+from backtest_strategy import MultiFactorStrategy
 
 # 加载环境变量
 load_dotenv()
