@@ -199,3 +199,43 @@ class MultiFactorStrategy(BacktestStrategy):
         df.loc[df['total_score'] < -0.3, 'signal'] = -1
 
         return df
+
+# ==============================================================
+# 4. 开盘区间突破策略（调整阈值 + 简化输出）
+# ==============================================================
+class OpeningRangeBreakoutStrategy(BacktestStrategy):
+    """15分钟级别 开盘区间突破策略（优化版）"""
+
+    def __init__(self, lookback_minutes=90, atr_period=10, atr_multiplier=0.03, cooldown_hours=2):
+        super().__init__("开盘区间突破策略（15m优化版）")
+        self.lookback_minutes = lookback_minutes
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.cooldown_hours = cooldown_hours
+
+    def generate_signals(self, data):
+        df = data.copy()
+        df['date'] = df.index.date
+        df['hour'] = df.index.hour
+
+        df['upper'] = np.nan
+        df['lower'] = np.nan
+
+        for date in df['date'].unique():
+            open_period = df[(df['date'] == date) & (df['hour'] == 0)].head(int(self.lookback_minutes / 15))
+            if not open_period.empty:
+                df.loc[df['date'] == date, 'upper'] = open_period['high'].max()
+                df.loc[df['date'] == date, 'lower'] = open_period['low'].min()
+
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift(1)).abs()
+        low_close = (df['low'] - df['close'].shift(1)).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(self.atr_period).mean()
+
+        df['signal'] = 0
+        df.loc[df['close'] > (df['upper'] + self.atr_multiplier * df['ATR']), 'signal'] = 1
+        df.loc[df['close'] < (df['lower'] - self.atr_multiplier * df['ATR']), 'signal'] = -1
+
+        df = df.fillna(0)
+        return df
