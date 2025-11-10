@@ -50,7 +50,8 @@ try:
     strategies = [
         MovingAverageStrategy(short_window=10, long_window=30),
         RSIStrategy(window=14, oversold=30, overbought=70),
-        MultiFactorStrategy()
+        MultiFactorStrategy()，
+        OpeningRangeBreakoutStrategy()
     ]
     
     results = {}
