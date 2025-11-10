@@ -7,7 +7,7 @@ import os
 import sys
 from datetime import datetime
 from dotenv import load_dotenv
-from backtest_strategy import MultiFactorStrategy
+from backtest_strategy import (MultiFactorStrategy, OpeningRangeBreakoutStrategy)
 
 # 加载环境变量
 load_dotenv()
@@ -34,9 +34,9 @@ try:
     
     data = loader.get_historical_data(
         asset='BTC',
-        interval='1d',
-        start=int(datetime(2024, 8, 1).timestamp()),
-        end=int(datetime(2025, 11, 1).timestamp())
+        interval='15m',
+        start=int(datetime(2025, 10, 1).timestamp()),
+        end=int(datetime(2025, 10, 15).timestamp())
     )
     
     # 添加技术指标
