@@ -1,209 +1,240 @@
 import time
+import os
+import logging
+from datetime import datetime
 import schedule
+import pandas as pd
+
 from api_client import client
-from strategy import QuickTestStrategy, SimpleStrategy
+from strategy import OpeningRangeBreakoutStrategy
 import config
+
+# global logging init
+os.makedirs("logs", exist_ok=True)
+today = datetime.now().strftime('%Y-%m-%d')
+log_file = f"logs/{today}.log"
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(log_file, encoding="utf-8"),
+        logging.StreamHandler()
+    ],
+)
+logger = logging.getLogger("trading-bot")
+
 
 class TradingBot:
     def __init__(self):
         self.client = client
-        self.strategy = QuickTestStrategy()  # 默认策略
+        self.strategy = OpeningRangeBreakoutStrategy()
         self.running = True
-        self.watchlist = ['BTC/USD', 'ETH/USD', 'SOL/USD']  # 监控的资产列表
-        self.asset_strategies = {}  # 每个资产的策略实例
-        
-    def initialize_strategies(self):
-        """为每个资产初始化策略"""
-        print("🎯 初始化资产策略...")
-        for asset in self.watchlist:
-            # 为每个资产创建独立的策略实例
-            self.asset_strategies[asset] = QuickTestStrategy()
-            print(f"   {asset}: {self.asset_strategies[asset].name}")
-    
+        # minimum notional in USD to avoid dust trades
+        self.min_notional_usd = 10.0
+
+    # connection test
     def test_connection(self):
-        """测试API连接"""
-        print("🔌 测试API连接...")
-        
-        # 测试服务器时间
+        print("Testing API connection...")
+
         result = self.client.get_server_time()
-        print(f"服务器时间: {result}")
-        
-        # 测试交易所信息
+        print(f"Server time: {result}")
+
         result = self.client.get_exchange_info()
-        print(f"交易所信息: {result}")
-        
-        # 测试余额查询
+        print(f"Exchange info: {result}")
+
         result = self.client.get_balance()
-        print(f"账户余额: {result}")
-        
-        # 测试所有监控资产的行情
-        for asset in self.watchlist:
-            result = self.client.get_ticker(asset)
-            print(f"{asset}行情: {result.get('Success', False)}")
-    
+        print(f"Account balance: {result}")
+
+        result = self.client.get_ticker('ETH/USD')
+        print(f"ETH ticker: {result}")
+
+    # normalize quantity according to exchange rules
+    def _normalize_qty(self, raw_qty: float, pair_rule: dict) -> float:
+        """
+        Normalize quantity to exchange rule:
+        - round by AmountPrecision
+        - must be >= MiniOrder
+        """
+        if raw_qty <= 0:
+            return 0.0
+
+        amount_prec = int(pair_rule.get("AmountPrecision", 4))
+        mini_order = float(pair_rule.get("MiniOrder", 0))
+
+        qty = round(raw_qty, amount_prec)
+
+        if qty <= 0:
+            return 0.0
+
+        if mini_order > 0 and qty < mini_order:
+            return 0.0
+
+        return qty
+
+    # single trading loop
     def run_once(self):
-        """执行一次完整的交易循环"""
-        try:
-            print("\n" + "="*60)
-            print("🔄 开始多资产交易循环...")
-            
-            # 为每个资产执行交易逻辑
-            for asset in self.watchlist:
-                self._trade_asset(asset)
-            
-            # 检查总体账户状态
-            self._check_account_status()
-            
-        except Exception as e:
-            print(f"❌ 交易循环错误: {e}")
-    
-    def _trade_asset(self, asset):
-        """处理单个资产的交易"""
-        print(f"\n📊 处理资产: {asset}")
-        
-        # 1. 获取市场数据
-        market_data = self.client.get_ticker(asset)
-        
-        if not market_data.get('Success'):
-            print(f"   ❌ 获取{asset}数据失败")
+        logger.info("==== start trading round ====")
+
+        # 1) get balance
+        account = self.client.get_balance()
+        if not account.get("Success"):
+            logger.error(f"failed to get balance: {account}")
             return
-        
-        ticker = market_data['Data'][asset]
-        current_price = ticker['LastPrice']
-        price_change = ticker.get('Change', 0) * 100  # 转换为百分比
-        
-        print(f"   💰 当前价格: ${current_price}")
-        print(f"   📈 24小时变化: {price_change:+.2f}%")
-        
-        # 2. 获取该资产的策略信号
-        strategy = self.asset_strategies.get(asset, self.strategy)
-        signal = strategy.generate_signal(market_data)
-        print(f"   🎯 交易信号: {signal}")
-        
-        # 3. 执行交易
-        if signal == 'BUY':
-            self._execute_buy(asset, current_price)
-        elif signal == 'SELL':
-            self._execute_sell(asset, current_price)
+
+        spot = account.get("SpotWallet", {})
+        usd_free = float(spot.get("USD", {}).get("Free", 0.0))
+        logger.info(f"current USD balance: {usd_free}")
+
+        usd_available = usd_free
+
+        assets = getattr(config, "TRADE_ASSETS", ["ETH/USD"])
+
+        exch_info = self.client.get_exchange_info()
+        trade_pairs = exch_info.get("TradePairs", {}) if isinstance(exch_info, dict) else {}
+
+        asset_info = {}
+        signaled_assets = []
+
+        # 2) generate signals for all assets
+        for pair in assets:
+            base = pair.split("/")[0]
+            logger.info(f"processing asset: {pair}")
+
+            try:
+                df = self.client.get_ohlcv(base, interval='15m', limit=100)
+            except Exception as e:
+                logger.error(f"{pair} failed to fetch OHLCV: {e}")
+                continue
+
+            if df is None or df.empty:
+                logger.warning(f"{pair} OHLCV is empty, skip")
+                continue
+
+            signal_df = self.strategy.generate_signals(df)
+            latest_signal = int(signal_df["signal"].iloc[-1])
+            last_price = float(df["close"].iloc[-1])
+
+            logger.info(f"{pair} last price: {last_price}, signal: {latest_signal}")
+
+            asset_info[pair] = {
+                "signal": latest_signal,
+                "price": last_price,
+            }
+
+            if latest_signal != 0:
+                signaled_assets.append(pair)
+
+        # 3) allocation
+        allocations = {}
+        allocation_mode = getattr(config, "ALLOCATION_MODE", "fixed")
+        fixed_pct = float(getattr(config, "FIXED_ALLOCATION", 0.15))
+
+        if allocation_mode == "fixed":
+            for pair in assets:
+                allocations[pair] = usd_free * fixed_pct
         else:
-            print("   ⏸️  持有不动")
-    
-    def _execute_buy(self, asset, current_price):
-        """执行买入操作"""
-        print("   🟢 执行买入操作...")
-        
-        # 计算交易量（根据资产类型调整最小交易量）
-        if 'BTC' in asset:
-            quantity = 0.0001  # BTC最小交易量
-        elif 'ETH' in asset:
-            quantity = 0.001   # ETH最小交易量
-        else:
-            quantity = 0.01    # 其他资产最小交易量
-        
-        # 检查账户余额
-        account = self.client.get_balance()
-        if account.get('Success'):
-            usd_balance = account['SpotWallet']['USD']['Free']
-            required_cash = quantity * current_price * 1.001  # 包含手续费
-            
-            if required_cash > usd_balance:
-                print(f"   ❌ 余额不足: 需要${required_cash:.2f}, 可用${usd_balance:.2f}")
-                return
-        
-        try:
-            result = self.client.place_order(
-                pair=asset,
-                side='BUY',
-                order_type='MARKET',
-                quantity=quantity
-            )
-            print(f"   ✅ 买入结果: {result.get('Success', False)}")
-        except Exception as e:
-            print(f"   ❌ 买入失败: {e}")
-    
-    def _execute_sell(self, asset, current_price):
-        """执行卖出操作"""
-        print("   🔴 执行卖出操作...")
-        
-        # 检查持仓
-        account = self.client.get_balance()
-        if not account.get('Success'):
-            return
-        
-        # 获取该资产的持仓数量
-        asset_name = asset.split('/')[0]  # 提取BTC、ETH等
-        holdings = account['SpotWallet'].get(asset_name, {})
-        quantity = holdings.get('Free', 0)
-        
-        if quantity <= 0:
-            print(f"   ❌ 无{asset_name}持仓可卖")
-            return
-        
-        # 使用最小交易量或全部持仓
-        trade_quantity = min(quantity, 0.0001 if 'BTC' in asset else 0.001)
-        
-        try:
-            result = self.client.place_order(
-                pair=asset,
-                side='SELL',
-                order_type='MARKET',
-                quantity=trade_quantity
-            )
-            print(f"   ✅ 卖出结果: {result.get('Success', False)}")
-        except Exception as e:
-            print(f"   ❌ 卖出失败: {e}")
-    
-    def _check_account_status(self):
-        """检查账户状态"""
-        print("\n📊 账户状态检查:")
-        account = self.client.get_balance()
-        
-        if account.get('Success'):
-            spot_wallet = account['SpotWallet']
-            
-            # 显示有余额的资产
-            for asset, balance in spot_wallet.items():
-                free = balance['Free']
-                locked = balance['Lock']
-                if free > 0 or locked > 0:
-                    print(f"   {asset}: 可用={free}, 冻结={locked}")
-    
+            if len(signaled_assets) > 0:
+                per_usd = usd_free / len(signaled_assets)
+                for pair in signaled_assets:
+                    allocations[pair] = per_usd
+
+        # 4) place orders
+        for pair in assets:
+            info = asset_info.get(pair)
+            if not info:
+                continue
+
+            signal = info["signal"]
+            price = info["price"]
+            base = pair.split("/")[0]
+
+            base_free = float(spot.get(base, {}).get("Free", 0.0))
+
+            pair_rule = trade_pairs.get(pair, {})
+
+            target_usd_for_this_asset = float(allocations.get(pair, 0.0))
+
+            if signal == 1:
+                usd_to_use = min(target_usd_for_this_asset, usd_available)
+
+                if usd_to_use < self.min_notional_usd:
+                    logger.info(f"{pair} buy signal but notional too small ({usd_to_use:.2f} USD), skip")
+                    continue
+
+                raw_qty = usd_to_use / price
+
+                qty = self._normalize_qty(raw_qty, pair_rule)
+
+                if qty <= 0:
+                    logger.info(
+                        f"{pair} buy signal but normalized qty is 0 "
+                        f"(raw {raw_qty}, rule {pair_rule}), skip"
+                    )
+                    continue
+
+                notional = qty * price
+                if notional < self.min_notional_usd:
+                    logger.info(
+                        f"{pair} buy signal but final notional is only {notional:.2f} USD, skip"
+                    )
+                    continue
+
+                logger.info(
+                    f"{pair} buy signal, will buy {qty} {base}, about {notional:.2f} USD"
+                )
+                resp = self.client.place_order(
+                    pair=pair,
+                    side="BUY",
+                    order_type="MARKET",
+                    quantity=qty
+                )
+                logger.info(f"{pair} buy result: {resp}")
+
+                usd_available = max(usd_available - notional, 0)
+
+            elif signal == -1:
+                if base_free <= 0:
+                    logger.info(f"{pair} sell signal but no position, skip")
+                    continue
+
+                sell_qty = self._normalize_qty(base_free, pair_rule)
+                if sell_qty <= 0:
+                    logger.info(
+                        f"{pair} sell signal but position {base_free} cannot be normalized, skip"
+                    )
+                    continue
+
+                if sell_qty * price < self.min_notional_usd:
+                    logger.info(
+                        f"{pair} sell signal but notional too small {sell_qty*price:.2f} USD, skip"
+                    )
+                    continue
+
+                logger.info(f"{pair} sell signal, will sell {sell_qty} {base}")
+                resp = self.client.place_order(
+                    pair=pair,
+                    side="SELL",
+                    order_type="MARKET",
+                    quantity=sell_qty
+                )
+                logger.info(f"{pair} sell result: {resp}")
+            else:
+                logger.info(f"{pair} no signal this round")
+
+        logger.info("==== end trading round ====")
+
+    # continuous run
     def run_continuous(self):
-        """持续运行"""
-        print("🚀 启动多资产交易机器人")
-        print("="*50)
-        
-        # 初始化策略
-        self.initialize_strategies()
-        
-        # 先测试连接
+        print("🚀 start quick test mode...")
+
         self.test_connection()
-        
-        # 设置定时任务（每2分钟运行一次）
+
         schedule.every(2).minutes.do(self.run_once)
-        
-        # 立即运行一次
+
         self.run_once()
-        
-        print("\n⏰ 多资产交易机器人开始运行...")
-        print("监控资产:", self.watchlist)
-        print("运行频率: 每2分钟检查一次")
-        
+
+        print("⏰ bot is running (every 2 minutes)...")
         while self.running:
             schedule.run_pending()
             time.sleep(1)
-    
-    def stop(self):
-        """停止机器人"""
-        self.running = False
-        print("🛑 交易机器人已停止")
-
-# 使用示例
-if __name__ == "__main__":
-    bot = TradingBot()
-    
-    try:
-        bot.run_continuous()
-    except KeyboardInterrupt:
-        print("\n👋 用户中断程序")
-        bot.stop()
