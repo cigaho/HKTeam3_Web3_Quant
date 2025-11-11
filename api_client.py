@@ -12,7 +12,7 @@ class RoostooAPIClient:
         self.secret_key = ROOSTOO_SECRET
         self.base_url = ROOSTOO_BASE_URL
         
-        # 验证配置
+
         if not self.api_key or not self.secret_key:
             raise ValueError("API key is not set，please check .env file")
     
