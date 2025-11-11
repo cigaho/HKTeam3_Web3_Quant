@@ -1,110 +1,123 @@
 import time
+import numpy as np
+import pandas as pd
+
+
+class OpeningRangeBreakoutStrategy:
+    """Opening Range Breakout, works with arbitrary minute bars (e.g. 2m, 15m)."""
+    def __init__(self, lookback_minutes=90, atr_period=10, atr_multiplier=0.03, cooldown_hours=2):
+        self.name = "Opening Range Breakout Strategy (adaptive)"
+        self.lookback_minutes = lookback_minutes
+        self.atr_period = atr_period
+        self.atr_multiplier = atr_multiplier
+        self.cooldown_hours = cooldown_hours
+
+    def _infer_bar_minutes(self, index) -> int:
+        # use median gap to infer bar size in minutes
+        diffs = pd.Series(index).diff().dropna()
+        seconds = diffs.dt.total_seconds().median() if hasattr(diffs, 'dt') else diffs.median().total_seconds()
+        return max(int(round(seconds / 60.0)), 1)
+
+    def generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
+        df = data.copy()
+
+        if not isinstance(df.index, pd.DatetimeIndex):
+            raise ValueError("DataFrame index must be DatetimeIndex")
+        df = df.sort_index()
+
+        bar_min = self._infer_bar_minutes(df.index)
+        bars_in_lookback = max(int(self.lookback_minutes // bar_min), 1)
+
+        df['date'] = df.index.date
+        df['upper'] = np.nan
+        df['lower'] = np.nan
+
+        for d, day_data in df.groupby('date'):
+            if len(day_data) >= bars_in_lookback:
+                open_period = day_data.head(bars_in_lookback)
+                df.loc[df['date'] == d, 'upper'] = open_period['high'].max()
+                df.loc[df['date'] == d, 'lower'] = open_period['low'].min()
+            else:
+                df.loc[df['date'] == d, 'upper'] = np.nan
+                df.loc[df['date'] == d, 'lower'] = np.nan
+
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift(1)).abs()
+        low_close  = (df['low']  - df['close'].shift(1)).abs()
+        true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = true_range.rolling(self.atr_period, min_periods=1).mean()
+
+        df['signal'] = 0
+        can_trade_mask = df['upper'].notna() & df['lower'].notna()
+        df.loc[can_trade_mask & (df['close'] > df['upper'] + self.atr_multiplier * df['ATR']), 'signal'] = 1
+        df.loc[can_trade_mask & (df['close'] < df['lower'] - self.atr_multiplier * df['ATR']), 'signal'] = -1
+
+        cooldown_bars = int((self.cooldown_hours * 60) // bar_min)
+        if cooldown_bars > 0:
+            sig = df['signal'].to_numpy()
+            last_i = -10**9
+            for i in range(len(sig)):
+                if i <= last_i + cooldown_bars:
+                    sig[i] = 0
+                elif sig[i] != 0:
+                    last_i = i
+            df['signal'] = sig
+
+        df.drop(columns=['date'], inplace=True)
+        df.fillna(0, inplace=True)
+        return df
+
 
 class QuickTestStrategy:
     def __init__(self):
-        self.name = "快速测试策略"
+        self.name = "Quick Test Strategy"
         self.trade_count = 0
         self.last_trade_time = 0
 
-    def get_ohlcv(self, pair='BTC/USD', interval='15m', limit=100):
-        """获取历史K线数据"""
-        url = f"{self.base_url}/ohlcv"
-        params = {
-            "symbol": pair,
-            "interval": interval,
-            "limit": limit
-        }
-        response = requests.get(url, params=params, headers=self.headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"获取K线数据失败: {response.text}")
-            return None
-
-    def convert_to_dataframe(self, ohlcv_json):
-        """将返回的OHLCV数据转成DataFrame"""
-        candles = ohlcv_json.get("Data", {}).get("BTC/USD", [])
-        if not candles:
-            return pd.DataFrame()
-
-        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        df = df.astype(float)
-        return df
-        
     def generate_signal(self, market_data):
         """
-        快速测试策略：每分钟交替买卖
+        Simple fast test strategy: alternate buy/sell every minute.
         """
         current_time = time.time()
-        
-        # 每分钟执行一次交易（避免频率限制）
-        if current_time - self.last_trade_time < 60:  # 60秒间隔
+
+        if current_time - self.last_trade_time < 60:
             return 'HOLD'
-        
+
         self.trade_count += 1
         self.last_trade_time = current_time
-        
-        print(f"🎯 测试交易 #{self.trade_count}")
-        
-        # 交替执行买卖：奇数次数买，偶数次数卖
+
+        print(f"🎯 Test trade #{self.trade_count}")
+
         if self.trade_count % 2 == 1:
-            print("➡️ 生成买入信号")
+            print("➡️ generate BUY signal")
             return 'BUY'
         else:
-            print("⬅️ 生成卖出信号")
+            print("⬅️ generate SELL signal")
             return 'SELL'
 
-# 保留原来的SimpleStrategy类作为备用
+
 class SimpleStrategy:
     def __init__(self):
-        self.name = "简单移动平均策略"
+        self.name = "Simple Moving Average Strategy"
         self.last_price = None
-    
+
     def generate_signal(self, market_data):
         """
-        生成交易信号
-        返回: 'BUY', 'SELL', 或 'HOLD'
+        Generate trading signal.
+        Return: 'BUY', 'SELL', or 'HOLD'
         """
         if not market_data.get('Success'):
             return 'HOLD'
-            
-        # 提取行情数据
+
         ticker = market_data['Data']['BTC/USD']
         current_price = ticker['LastPrice']
-        price_change = ticker['Change']  # 24小时价格变化百分比
-        
-        print(f"价格: ${current_price}, 24小时变化: {price_change*100:.2f}%")
-        
-        # 简单的策略逻辑
-        if price_change < -0.02:  # 如果24小时下跌超过2%
+        price_change = ticker['Change']
+
+        print(f"Price: ${current_price}, 24h change: {price_change*100:.2f}%")
+
+        if price_change < -0.02:
             return 'BUY'
-        elif price_change > 0.03:  # 如果24小时上涨超过3%
+        elif price_change > 0.03:
             return 'SELL'
         else:
             return 'HOLD'
-
-class MultiAssetStrategy:
-    """同时监控多个资产的策略"""
-    
-    def __init__(self, assets=None):
-        self.name = "多资产监控策略"
-        self.assets = assets or ['BTC/USD', 'ETH/USD', 'SOL/USD']
-        self.asset_strategies = {}
-        
-        # 为每个资产创建独立的策略
-        for asset in self.assets:
-            self.asset_strategies[asset] = SimpleStrategy(asset)
-    
-    def generate_signal(self, market_data):
-        """
-        为每个资产生成独立的信号
-        返回: 字典 {asset: signal}
-        """
-        signals = {}
-        
-        for asset, strategy in self.asset_strategies.items():
-            signals[asset] = strategy.generate_signal(market_data)
-        
-        return signals
