@@ -7,7 +7,7 @@ import seaborn as sns
 class Backtester:
     def __init__(self, initial_capital=50000, commission=0.001, slippage=0.0005):
         """
-        初始化回测引擎
+        initialize backtest engine
         """
         self.initial_capital = initial_capital
         self.commission = commission
@@ -15,7 +15,7 @@ class Backtester:
         self.reset()
     
     def reset(self):
-        """重置回测状态"""
+        """reset backtest state"""
         self.capital = self.initial_capital
         self.position = 0
         self.position_value = 0
@@ -25,23 +25,20 @@ class Backtester:
         self.current_step = 0
         
     def run_backtest(self, strategy, data, add_indicators=True):
-        """
-        运行回测
-        """
-        print(f"🎯 开始回测: {strategy.name}")
+        print(f"🎯 Backtest start: {strategy.name}")
         self.reset()
         
-        # 添加技术指标
+        #add indicators
         if add_indicators:
             data = self.add_technical_indicators(data)
         
-        # 生成交易信号
+        # generate order signal
         signals_df = strategy.generate_signals(data)
         
         if signals_df is None or len(signals_df) == 0:
-            raise ValueError("策略未生成有效信号")
+            raise ValueError("No trading signal formed by strategy")
         
-        # 运行回测循环
+        # run backtest 
         for i, (timestamp, row) in enumerate(signals_df.iterrows()):
             if i >= len(data):
                 break
@@ -50,36 +47,33 @@ class Backtester:
             current_data = data.iloc[i]
             current_price = current_data['close']
             signal = row['signal'] if 'signal' in row else 0
-            
-            # 应用滑点
             execution_price = self._apply_slippage(current_price, signal)
             
-            # 执行交易逻辑
+            # execute order
             self._execute_trading_rules(signal, execution_price, timestamp, current_data)
             
-            # 更新权益曲线
+            # update equity curve
             self._update_equity_curve(execution_price, timestamp)
             
-            # 记录信号
+            # track signal
             self.signals.append({
                 'timestamp': timestamp,
                 'signal': signal,
                 'price': execution_price
             })
         
-        # 计算绩效指标
+        
         results = self._calculate_performance_metrics()
         results['strategy_name'] = strategy.name
         results['data_points'] = len(signals_df)
         
-        print("✅ 回测完成!")
+        print("✅ backtest finish!")
         return results
     
     def add_technical_indicators(self, data):
-        """添加技术指标（与data_loader中的相同逻辑）"""
         df = data.copy()
         
-        # 移动平均线
+        # moving average line
         df['ma_7'] = df['close'].rolling(window=7).mean()
         df['ma_25'] = df['close'].rolling(window=25).mean()
         
@@ -89,7 +83,6 @@ class Backtester:
         return df
     
     def _calculate_rsi(self, prices, window=14):
-        """计算RSI"""
         delta = prices.diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
@@ -102,7 +95,6 @@ class Backtester:
         return rsi
     
     def _apply_slippage(self, price, signal):
-        """应用滑点"""
         slippage_factor = self.slippage
         if signal > 0:
             return price * (1 + slippage_factor)
@@ -112,10 +104,9 @@ class Backtester:
             return price
     
     def _execute_trading_rules(self, signal, price, timestamp, data):
-        """执行交易规则"""
-        max_trade_value = self.capital * 0.1  # 单次交易最多10%资金
+        max_trade_value = self.capital * 0.1  # limit single transaction amount to 10%
         
-        if signal == 1 and self.position == 0:  # 买入
+        if signal == 1 and self.position == 0:  # buy
             max_quantity = max_trade_value / (price * (1 + self.commission))
             quantity = min(max_quantity, max_trade_value / price)
             
@@ -134,7 +125,7 @@ class Backtester:
                     'signal_strength': signal
                 })
         
-        elif signal == -1 and self.position > 0:  # 卖出
+        elif signal == -1 and self.position > 0:  # sell
             revenue = self.position * price * (1 - self.commission)
             self.capital += revenue
             self.position = 0
@@ -150,7 +141,6 @@ class Backtester:
             })
     
     def _update_equity_curve(self, price, timestamp):
-        """更新权益曲线"""
         current_equity = self.capital + (self.position * price)
         self.equity_curve.append({
             'timestamp': timestamp,
@@ -161,40 +151,39 @@ class Backtester:
         })
     
     def _calculate_performance_metrics(self):
-        """计算详细的绩效指标"""
         if len(self.equity_curve) == 0:
             return {}
         
         equity_df = pd.DataFrame(self.equity_curve)
         equity_df.set_index('timestamp', inplace=True)
         
-        # 基础指标
+        # basic indicator
         final_equity = equity_df['equity'].iloc[-1]
         total_return = (final_equity - self.initial_capital) / self.initial_capital
         
-        # 计算收益率
+        # calculate return
         equity_df['returns'] = equity_df['equity'].pct_change()
         
-        # 最大回撤
+        # calculate maximum drawdown
         equity_df['peak'] = equity_df['equity'].cummax()
         equity_df['drawdown'] = (equity_df['equity'] - equity_df['peak']) / equity_df['peak']
         max_drawdown = equity_df['drawdown'].min()
         
-        # 年化收益率
+        # annulized return rate
         days = (equity_df.index[-1] - equity_df.index[0]).days
         annual_return = (1 + total_return) ** (365/days) - 1 if days > 0 else 0
         
-        # 夏普比率
+        # Sharpe ratio
         excess_returns = equity_df['returns'].dropna()
         sharpe_ratio = excess_returns.mean() / excess_returns.std() * np.sqrt(252) if excess_returns.std() > 0 else 0
         
-        # === 新增指标1: Sortino Ratio ===
+        # Sortino Ratio 
         sortino_ratio = self._calculate_sortino_ratio(equity_df)
         
-        # === 新增指标2: Calmar Ratio ===
+        #  Calmar Ratio
         calmar_ratio = self._calculate_calmar_ratio(annual_return, max_drawdown)
         
-        # 交易统计
+        # trading statistics
         total_trades = len(self.trades)
         winning_trades = self._calculate_winning_trades()
         win_rate = winning_trades / total_trades if total_trades > 0 else 0
@@ -206,8 +195,8 @@ class Backtester:
             'annual_return': annual_return,
             'max_drawdown': max_drawdown,
             'sharpe_ratio': sharpe_ratio,
-            'sortino_ratio': sortino_ratio,  # 新增
-            'calmar_ratio': calmar_ratio,    # 新增
+            'sortino_ratio': sortino_ratio,  
+            'calmar_ratio': calmar_ratio,   
             'total_trades': total_trades,
             'win_rate': win_rate,
             'trades': self.trades,
@@ -217,24 +206,23 @@ class Backtester:
     
     def _calculate_sortino_ratio(self, equity_df):
         """
-        计算索提诺比率 (Sortino Ratio)
-        公式: Sortino Ratio = Rp̄ / σd
-        Rp̄ = 平均投资组合收益率
-        σd = 下行风险（负收益的标准差）
+        calculate Sortino Ratio
+        formula: Sortino Ratio = Rp̄ / σd
+        Rp̄ = average portfolio return
+        σd = standard deviation for negative return
         """
         returns = equity_df['returns'].dropna()
         
         if len(returns) == 0:
             return 0
         
-        # 计算平均收益率
+        
         mean_return = returns.mean()
         
-        # 计算下行风险（只考虑负收益）
+        
         downside_returns = returns[returns < 0]
         
         if len(downside_returns) == 0:
-            # 如果没有下行风险，Sortino比率设为无穷大
             return float('inf')
         
         downside_risk = downside_returns.std()
@@ -242,19 +230,19 @@ class Backtester:
         if downside_risk == 0:
             return float('inf')
         
-        # 年化处理
+        # annualize
         sortino_ratio = mean_return / downside_risk * np.sqrt(252)
         return sortino_ratio
     
     def _calculate_calmar_ratio(self, annual_return, max_drawdown):
         """
-        计算卡尔玛比率 (Calmar Ratio)
-        公式: Calmar Ratio = 年化收益率 / |最大回撤|
+        Calculate Calmar Ratio
+        Formula: Calmar Ratio = annualized return / |maximum drawback|
         """
         if max_drawdown == 0:
             return float('inf')
         
-        # 取最大回撤的绝对值
+        # absolute value for maximum drawback
         max_drawdown_abs = abs(max_drawdown)
         
         if max_drawdown_abs == 0:
@@ -264,7 +252,6 @@ class Backtester:
         return calmar_ratio
     
     def _calculate_winning_trades(self):
-        """计算盈利交易数量"""
         if len(self.trades) < 2:
             return 0
         
@@ -278,22 +265,21 @@ class Backtester:
         return wins
     
     def generate_report(self, results):
-        """生成回测报告"""
         print("\n" + "="*60)
-        print("📊 量化策略回测报告")
+        print("📊 strategies backtest reports")
         print("="*60)
         
-        print(f"策略名称: {results['strategy_name']}")
-        print(f"数据点数: {results['data_points']}")
-        print(f"初始资金: ${results['initial_capital']:,.2f}")
-        print(f"最终权益: ${results['final_equity']:,.2f}")
-        print(f"总收益率: {results['total_return']:+.2%}")
-        print(f"年化收益率: {results['annual_return']:+.2%}")
-        print(f"最大回撤: {results['max_drawdown']:+.2%}")
-        print(f"夏普比率: {results['sharpe_ratio']:.2f}")
-        print(f"索提诺比率: {results['sortino_ratio']:.2f}")  # 新增
-        print(f"卡尔玛比率: {results['calmar_ratio']:.2f}")    # 新增
-        print(f"总交易次数: {results['total_trades']}")
-        print(f"胜率: {results['win_rate']:.1%}")
+        print(f"Strategy name: {results['strategy_name']}")
+        print(f"Data points: {results['data_points']}")
+        print(f"Initial capital: ${results['initial_capital']:,.2f}")
+        print(f"Final equity: ${results['final_equity']:,.2f}")
+        print(f"Total return: {results['total_return']:+.2%}")
+        print(f"Annualized return: {results['annual_return']:+.2%}")
+        print(f"Maximum drawback: {results['max_drawdown']:+.2%}")
+        print(f"Sharpe ratio: {results['sharpe_ratio']:.2f}")
+        print(f"Sortino ratio: {results['sortino_ratio']:.2f}")  
+        print(f"Calmar ratio: {results['calmar_ratio']:.2f}")    
+        print(f"Total trade counts: {results['total_trades']}")
+        print(f"Win rate: {results['win_rate']:.1%}")
         
         return results
