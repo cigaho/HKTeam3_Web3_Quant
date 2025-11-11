@@ -57,3 +57,27 @@ class SimpleStrategy:
             return 'SELL'
         else:
             return 'HOLD'
+
+class MultiAssetStrategy:
+    """同时监控多个资产的策略"""
+    
+    def __init__(self, assets=None):
+        self.name = "多资产监控策略"
+        self.assets = assets or ['BTC/USD', 'ETH/USD', 'SOL/USD']
+        self.asset_strategies = {}
+        
+        # 为每个资产创建独立的策略
+        for asset in self.assets:
+            self.asset_strategies[asset] = SimpleStrategy(asset)
+    
+    def generate_signal(self, market_data):
+        """
+        为每个资产生成独立的信号
+        返回: 字典 {asset: signal}
+        """
+        signals = {}
+        
+        for asset, strategy in self.asset_strategies.items():
+            signals[asset] = strategy.generate_signal(market_data)
+        
+        return signals
