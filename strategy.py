@@ -5,6 +5,33 @@ class QuickTestStrategy:
         self.name = "快速测试策略"
         self.trade_count = 0
         self.last_trade_time = 0
+
+    def get_ohlcv(self, pair='BTC/USD', interval='15m', limit=100):
+        """获取历史K线数据"""
+        url = f"{self.base_url}/ohlcv"
+        params = {
+            "symbol": pair,
+            "interval": interval,
+            "limit": limit
+        }
+        response = requests.get(url, params=params, headers=self.headers)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"获取K线数据失败: {response.text}")
+            return None
+
+    def convert_to_dataframe(self, ohlcv_json):
+        """将返回的OHLCV数据转成DataFrame"""
+        candles = ohlcv_json.get("Data", {}).get("BTC/USD", [])
+        if not candles:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+        df.set_index("timestamp", inplace=True)
+        df = df.astype(float)
+        return df
         
     def generate_signal(self, market_data):
         """
